@@ -611,6 +611,63 @@ apidocs:
 check-doc-links:
 	@python3 hack/verify-doc-links.py && echo "$@: OK"
 
+# E2E test for InferenceGraph step retry with exponential backoff.
+# Prerequisites: a Kind cluster with KServe installed (Knative, Istio, cert-manager).
+# Usage:
+#   make test-retry-e2e                     # uses localhost:5001 local registry
+#   make test-retry-e2e RETRY_E2E_REGISTRY=my-registry.example.com
+RETRY_E2E_REGISTRY ?= localhost:5001
+RETRY_E2E_TAG ?= retry-test
+RETRY_E2E_NS ?= ig-retry-test
+
+.PHONY: test-retry-e2e
+test-retry-e2e: test-retry-e2e-build test-retry-e2e-deploy test-retry-e2e-run
+
+.PHONY: test-retry-e2e-build
+test-retry-e2e-build:
+	@echo "=== Building router and controller images ==="
+	${ENGINE} buildx build ${ARCH} -f router.Dockerfile . -t $(RETRY_E2E_REGISTRY)/kserve/router:$(RETRY_E2E_TAG)
+	${ENGINE} buildx build ${ARCH} . -t $(RETRY_E2E_REGISTRY)/kserve/kserve-controller:$(RETRY_E2E_TAG)
+	@echo "=== Pushing images to $(RETRY_E2E_REGISTRY) ==="
+	${ENGINE} push --tls-verify=false $(RETRY_E2E_REGISTRY)/kserve/router:$(RETRY_E2E_TAG)
+	${ENGINE} push --tls-verify=false $(RETRY_E2E_REGISTRY)/kserve/kserve-controller:$(RETRY_E2E_TAG)
+
+.PHONY: test-retry-e2e-deploy
+test-retry-e2e-deploy:
+	@echo "=== Applying updated CRDs ==="
+	kubectl apply --server-side=true --force-conflicts -f config/crd/full/serving.kserve.io_inferencegraphs.yaml
+	@echo "=== Updating controller image ==="
+	kubectl set image deployment/kserve-controller-manager manager=$(RETRY_E2E_REGISTRY)/kserve/kserve-controller:$(RETRY_E2E_TAG) -n kserve
+	kubectl patch deployment kserve-controller-manager -n kserve --type json \
+		-p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'
+	kubectl rollout status deployment/kserve-controller-manager -n kserve --timeout=120s
+	@echo "=== Updating router image in configmap ==="
+	kubectl patch configmap inferenceservice-config -n kserve --type merge \
+		-p '{"data":{"router":"{\"image\":\"$(RETRY_E2E_REGISTRY)/kserve/router:$(RETRY_E2E_TAG)\",\"memoryRequest\":\"128Mi\",\"memoryLimit\":\"512Mi\",\"cpuRequest\":\"100m\",\"cpuLimit\":\"1\"}"}}'
+	@echo "=== Deploying test fixtures ==="
+	kubectl create namespace $(RETRY_E2E_NS) --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f test/e2e-retry/flaky-model.yaml
+	kubectl apply -f test/e2e-retry/stable-model.yaml
+	kubectl rollout status deployment/flaky-model -n $(RETRY_E2E_NS) --timeout=120s
+	kubectl rollout status deployment/stable-model -n $(RETRY_E2E_NS) --timeout=120s
+	@echo "=== Deploying InferenceGraph ==="
+	kubectl apply -f test/e2e-retry/inference-graph.yaml
+	@echo "Waiting for InferenceGraph to be ready..."
+	kubectl wait --for=condition=Ready inferencegraph/retry-test-graph -n $(RETRY_E2E_NS) --timeout=180s
+
+.PHONY: test-retry-e2e-run
+test-retry-e2e-run:
+	@echo "=== Running retry E2E test ==="
+	bash test/e2e-retry/run-test.sh
+
+.PHONY: test-retry-e2e-clean
+test-retry-e2e-clean:
+	@echo "=== Cleaning up retry E2E test resources ==="
+	kubectl delete inferencegraph retry-test-graph -n $(RETRY_E2E_NS) --ignore-not-found
+	kubectl delete -f test/e2e-retry/flaky-model.yaml --ignore-not-found
+	kubectl delete -f test/e2e-retry/stable-model.yaml --ignore-not-found
+	kubectl delete namespace $(RETRY_E2E_NS) --ignore-not-found
+
 # Extension point for distro-specific manifest generation.
 .PHONY: manifests-distro
 manifests-distro:

@@ -1,80 +1,117 @@
-# KServe
-[![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white)](https://pkg.go.dev/github.com/kserve/kserve)
-[![Go Report Card](https://goreportcard.com/badge/github.com/kserve/kserve)](https://goreportcard.com/report/github.com/kserve/kserve)
-[![OpenSSF Best Practices](https://bestpractices.coreinfrastructure.org/projects/6643/badge)](https://bestpractices.coreinfrastructure.org/projects/6643)
-[![Releases](https://img.shields.io/github/release-pre/kserve/kserve.svg?sort=semver)](https://github.com/kserve/kserve/releases)
-[![LICENSE](https://img.shields.io/github/license/kserve/kserve.svg)](https://github.com/kserve/kserve/blob/master/LICENSE)
-[![Slack Status](https://img.shields.io/badge/slack-join_chat-white.svg?logo=slack&style=social)](https://github.com/kserve/community/blob/main/README.md#questions-and-issues)
-[![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20KServe%20Guru-006BFF)](https://gurubase.io/g/kserve)
+# InferenceGraph Retry — E2E Test Branch
 
-KServe is a standardized distributed generative and predictive AI inference platform for scalable, multi-framework deployment on Kubernetes.
+This branch contains the E2E test infrastructure for validating the InferenceGraph step retry feature.
+The production code lives on [`feat/inferencegraph-step-retry`](https://github.com/papagala/kserve/tree/feat/inferencegraph-step-retry).
 
-KServe is being [used by many organizations](https://kserve.github.io/website/docs/community/adopters) and is a [Cloud Native Computing Foundation (CNCF)](https://www.cncf.io/) incubating project.
+## What this tests
 
-For more details, visit the [KServe website](https://kserve.github.io/website/).
+An Ensemble InferenceGraph with two steps:
+- **flaky-model** — a Python HTTP server that returns `503 Service Unavailable` **50% of the time**
+- **stable-model** — a Python HTTP server that always returns `200 OK`
 
-![KServe](/docs/diagrams/kserve_new.png)
+The flaky step has `retry.maxRetries: 5` configured. The test sends 20 requests and verifies that all 20 succeed thanks to the retry logic, then checks the router logs (via `stern`) for retry entries with escalating backoff delays.
 
-### Why KServe?
+## Prerequisites
 
-Single platform that unifies Generative and Predictive AI inference on Kubernetes. Simple enough for quick deployments, yet powerful enough to handle enterprise-scale AI workloads with advanced features.
+The following tools must be installed on your machine before running the tests.
 
-### Features
+| Tool | Tested version | Install |
+|---|---|---|
+| **Kind** | v0.30.0 | `go install sigs.k8s.io/kind@v0.30.0` or [kind.sigs.k8s.io](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) |
+| **kubectl** | v1.33+ | [kubernetes.io/docs/tasks/tools](https://kubernetes.io/docs/tasks/tools/) |
+| **Docker** or **Podman** | Docker 24+ / Podman 5+ | [docs.docker.com](https://docs.docker.com/get-docker/) or [podman.io](https://podman.io/getting-started/installation) |
+| **Go** | 1.25+ | [go.dev/dl](https://go.dev/dl/) |
+| **stern** (optional) | 1.30+ | `brew install stern` or [github.com/stern/stern](https://github.com/stern/stern#installation) |
+| **curl** | any | Pre-installed on macOS/Linux |
 
-**Generative AI**
-  * 🧮 **Optimized Backends**: Support for vLLM and llm-d for optimized performance for serving LLMs
-  * 📌 **Standardization**: OpenAI-compatible inference protocol for seamless integration with LLMs
-  * 🚅 **GPU Acceleration**: High-performance serving with GPU support and optimized memory management for large models
-  * 💾 **Model Caching**: Intelligent model caching to reduce loading times and improve response latency for frequently used models
-  * 🗂️ **KV Cache Offloading**: Advanced memory management with KV cache offloading to CPU/disk for handling longer sequences efficiently
-  * 📈 **Autoscaling**: Request-based autoscaling capabilities optimized for generative workload patterns
-  * 🔧 **Hugging Face Ready**: Native support for Hugging Face models with streamlined deployment workflows
+## Setting up the Kind cluster
 
-**Predictive AI**
-  * 🧮 **Multi-Framework**: Support for TensorFlow, PyTorch, scikit-learn, XGBoost, ONNX, and more
-  * 🔀 **Intelligent Routing**: Seamless request routing between predictor, transformer, and explainer components with automatic traffic management
-  * 🔄 **Advanced Deployments**: Canary rollouts, inference pipelines, and ensembles with InferenceGraph
-  * ⚡ **Autoscaling**: Request-based autoscaling with scale-to-zero for predictive workloads
-  * 🔍 **Model Explainability**: Built-in support for model explanations and feature attribution to understand prediction reasoning
-  * 📊 **Advanced Monitoring**: Enables payload logging, outlier detection, adversarial detection, and drift detection
-  * 💰 **Cost Efficient**: Scale-to-zero on expensive resources when not in use, reducing infrastructure costs
+If you don't already have a Kind cluster with KServe installed, use the provided scripts:
 
-### Learn More
-To learn more about KServe, how to use various supported features, and how to participate in the KServe community, 
-please follow the [KServe website documentation](https://kserve.github.io/website). 
-Additionally, we have compiled a list of [presentations and demos](https://kserve.github.io/website/docs/community/presentations) to dive through various details.
+```bash
+# 1. Create a Kind cluster with a local registry on localhost:5001
+bash hack/setup/dev/manage.kind-with-registry.sh
 
-### :hammer_and_wrench: Installation
+# 2. Install Istio, Knative Serving, cert-manager, and KServe
+#    (requires bash 4+ on macOS: brew install bash)
+bash hack/kserve-install.sh --type all
+```
 
-#### Standalone Installation
-- **[Standard Kubernetes Installation](https://kserve.github.io/website/docs/admin-guide/overview#raw-kubernetes-deployment)**: Compared to Serverless Installation, this is a more **lightweight** installation. However, this option does not support canary deployment and request based autoscaling with scale-to-zero.
-- **[Knative Installation](https://kserve.github.io/website/docs/admin-guide/overview#serverless-deployment)**: KServe by default installs Knative for **serverless deployment** for InferenceService.
-- **[ModelMesh Installation](https://kserve.github.io/website/docs/admin-guide/overview#modelmesh-deployment)**: You can optionally install ModelMesh to enable **high-scale**, **high-density** and **frequently-changing model serving** use cases. 
-- **[Quick Installation](https://kserve.github.io/website/docs/getting-started/quickstart-guide)**: Install KServe on your local machine.
+> **Note**: On macOS, the install script requires bash 4+. If `/bin/bash` is version 3.x,
+> run with `/opt/homebrew/bin/bash` or install via `brew install bash`.
 
-#### Kubeflow Installation
-KServe is an important addon component of Kubeflow, please learn more from the [Kubeflow KServe documentation](https://www.kubeflow.org/docs/external-add-ons/kserve/kserve). Check out the following guides for running [on AWS](https://awslabs.github.io/kubeflow-manifests/main/docs/component-guides/kserve) or [on OpenShift Container Platform](https://github.com/kserve/kserve/blob/master/docs/OPENSHIFT_GUIDE.md).
+If you already have a Kind cluster with KServe running, skip to the next section.
 
-### :flight_departure: [Create your first InferenceService](https://kserve.github.io/website/docs/getting-started/genai-first-isvc)
+## Running the E2E test
 
-### :bulb: [Roadmap](./ROADMAP.md)
+### One command (build + deploy + test)
 
-### :blue_book: [InferenceService API Reference](https://kserve.github.io/website/docs/reference/crd-api)
+```bash
+make test-retry-e2e
+```
 
-### :toolbox: [Developer Guide](https://kserve.github.io/website/docs/developer-guide)
+This will:
+1. Build the router and controller images from this branch
+2. Push them to the local registry (`localhost:5001`)
+3. Apply the updated InferenceGraph CRD
+4. Update the controller and router images in the cluster
+5. Deploy the flaky-model, stable-model, and InferenceGraph fixtures
+6. Send 20 requests and report the results
+7. Print router retry logs
 
-### :writing_hand: [Contributor Guide](https://kserve.github.io/website/docs/developer-guide/contribution)
+### Step by step
 
-### :handshake: [Adopters](https://kserve.github.io/website/docs/community/adopters)
+```bash
+# Build and push router + controller images
+make test-retry-e2e-build
 
-### Star History
+# Deploy CRDs, update controller/router, deploy test fixtures
+make test-retry-e2e-deploy
 
-[![Star History Chart](https://api.star-history.com/svg?repos=kserve/kserve&type=Date)](https://www.star-history.com/#kserve/kserve&Date)
+# Run the test (20 requests + retry log check)
+make test-retry-e2e-run
 
-### Contributors
+# Clean up test resources when done
+make test-retry-e2e-clean
+```
 
-Thanks to all of our amazing contributors!
+### Configuration
 
-<a href="https://github.com/kserve/kserve/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=kserve/kserve" />
-</a>
+| Variable | Default | Description |
+|---|---|---|
+| `RETRY_E2E_REGISTRY` | `localhost:5001` | Container registry to push images to |
+| `RETRY_E2E_TAG` | `retry-test` | Image tag for router and controller |
+| `RETRY_E2E_NS` | `ig-retry-test` | Kubernetes namespace for test resources |
+| `ENGINE` | `docker` | Container engine (`docker` or `podman`) |
+
+Example with Podman:
+
+```bash
+ENGINE=podman make test-retry-e2e
+```
+
+## Expected output
+
+```
+=== Sending 20 requests ===
+....................
+=== Results: 20/20 succeeded, 0/20 failed ===
+
+=== Router retry logs ===
+{"msg":"Step returned retriable status, will retry","url":"http://flaky-model.ig-retry-test.svc.cluster.local","attempt":0,"statusCode":503}
+{"msg":"Retrying step","url":"http://flaky-model.ig-retry-test.svc.cluster.local","attempt":1,"maxRetries":5,"delay":0.039452613}
+{"msg":"Retrying step","url":"http://flaky-model.ig-retry-test.svc.cluster.local","attempt":2,"maxRetries":5,"delay":0.015573684}
+{"msg":"Retrying step","url":"http://flaky-model.ig-retry-test.svc.cluster.local","attempt":3,"maxRetries":5,"delay":0.606106227}
+=== Done ===
+```
+
+All 20 requests should succeed. The retry logs confirm exponential backoff with jitter on the 503 responses from the flaky model.
+
+## Test fixtures
+
+| File | Description |
+|---|---|
+| [`test/e2e-retry/flaky-model.yaml`](test/e2e-retry/flaky-model.yaml) | ConfigMap + Deployment + Service for a Python server returning 503 50% of the time |
+| [`test/e2e-retry/stable-model.yaml`](test/e2e-retry/stable-model.yaml) | ConfigMap + Deployment + Service for a Python server always returning 200 |
+| [`test/e2e-retry/inference-graph.yaml`](test/e2e-retry/inference-graph.yaml) | Ensemble InferenceGraph with `retry.maxRetries: 5` on the flaky step |
+| [`test/e2e-retry/run-test.sh`](test/e2e-retry/run-test.sh) | Test script: port-forward, warmup, 20 requests, retry log check |

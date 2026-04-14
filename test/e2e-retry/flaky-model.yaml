@@ -1,0 +1,94 @@
+---
+# A simple HTTP server that simulates a flaky model:
+# - Returns 503 Service Unavailable ~50% of the time
+# - Returns 200 with a prediction the other ~50%
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flaky-model-script
+  namespace: ig-retry-test
+data:
+  server.py: |
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import json
+    import random
+    import os
+
+    FAIL_RATE = float(os.environ.get("FAIL_RATE", "0.5"))
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+
+            if random.random() < FAIL_RATE:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "service temporarily unavailable"}).encode())
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"predictions": [{"label": "flaky-model", "score": 0.85}]}).encode())
+
+        def do_GET(self):
+            # Health check
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+    if __name__ == "__main__":
+        server = HTTPServer(("0.0.0.0", 8080), Handler)
+        print(f"Flaky model server starting on port 8080 (fail_rate={FAIL_RATE})")
+        server.serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flaky-model
+  namespace: ig-retry-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flaky-model
+  template:
+    metadata:
+      labels:
+        app: flaky-model
+    spec:
+      containers:
+        - name: model
+          image: python:3.11-slim
+          command: ["python", "/app/server.py"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: FAIL_RATE
+              value: "0.5"
+          volumeMounts:
+            - name: script
+              mountPath: /app
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: script
+          configMap:
+            name: flaky-model-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flaky-model
+  namespace: ig-retry-test
+spec:
+  selector:
+    app: flaky-model
+  ports:
+    - port: 80
+      targetPort: 8080

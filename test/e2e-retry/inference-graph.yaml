@@ -1,0 +1,24 @@
+---
+# InferenceGraph with retry config on a flaky ensemble member.
+# The graph has:
+#   root (Sequence) -> ensemble-node (Ensemble) with 2 steps:
+#     - flaky-model (with retry)
+#     - stable-model (no retry needed)
+apiVersion: serving.kserve.io/v1alpha1
+kind: InferenceGraph
+metadata:
+  name: retry-test-graph
+  namespace: ig-retry-test
+spec:
+  nodes:
+    root:
+      routerType: Ensemble
+      steps:
+        - name: flaky
+          serviceUrl: http://flaky-model.ig-retry-test.svc.cluster.local
+          retry:
+            maxRetries: 5
+            initialDelayMs: 200
+            maxDelayMs: 2000
+        - name: stable
+          serviceUrl: http://stable-model.ig-retry-test.svc.cluster.local
